@@ -5,7 +5,7 @@ use crate::LogSpecification;
 
 #[cfg(feature = "textfilter")]
 use regex::Regex;
-use std::collections::HashMap;
+// use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 // Implements log::Log to plug into the log crate.
@@ -17,7 +17,7 @@ use std::sync::{Arc, RwLock};
 pub(crate) struct FlexiLogger {
     log_specification: Arc<RwLock<LogSpecification>>,
     primary_writer: Arc<PrimaryWriter>,
-    other_writers: Arc<HashMap<String, Box<dyn LogWriter>>>,
+    command_writer: Arc<Box<dyn LogWriter>>,
     filter: Option<Box<dyn LogLineFilter + Send + Sync>>,
 }
 
@@ -25,13 +25,13 @@ impl FlexiLogger {
     pub fn new(
         log_specification: Arc<RwLock<LogSpecification>>,
         primary_writer: Arc<PrimaryWriter>,
-        other_writers: Arc<HashMap<String, Box<dyn LogWriter>>>,
+        command_writer: Arc<Box<dyn LogWriter>>,
         filter: Option<Box<dyn LogLineFilter + Send + Sync>>,
     ) -> Self {
         Self {
             log_specification,
             primary_writer,
-            other_writers,
+            command_writer,
             filter,
         }
     }
@@ -61,21 +61,8 @@ impl log::Log for FlexiLogger {
         let target = metadata.target();
         let level = metadata.level();
 
-        if !self.other_writers.is_empty() && target.starts_with('{') {
-            // at least one other writer is configured _and_ addressed
-            let targets: Vec<&str> = target[1..(target.len() - 1)].split(',').collect();
-            for t in targets {
-                if t != "_Default" {
-                    match self.other_writers.get(t) {
-                        None => eprintln!("[flexi_logger] bad writer spec: {}", t),
-                        Some(writer) => {
-                            if level < writer.max_log_level() {
-                                return true;
-                            }
-                        }
-                    }
-                }
-            }
+        if target == "klog" {
+            return true;
         }
 
         self.primary_enabled(level, target)
@@ -84,39 +71,18 @@ impl log::Log for FlexiLogger {
     fn log(&self, record: &log::Record) {
         let target = record.metadata().target();
         let mut now = crate::DeferredNow::new();
-        let special_target_is_used = target.starts_with('{');
-        if special_target_is_used {
-            let mut use_default = false;
-            let targets: Vec<&str> = target[1..(target.len() - 1)].split(',').collect();
-            for t in targets {
-                if t == "_Default" {
-                    use_default = true;
-                } else {
-                    match self.other_writers.get(t) {
-                        None => eprintln!("[flexi_logger] found bad writer spec: {}", t),
-                        Some(writer) => {
-                            writer.write(&mut now, record).unwrap_or_else(|e| {
-                                eprintln!(
-                                    "[flexi_logger] writing log line to custom writer \"{}\" \
-                                         failed with: \"{}\"",
-                                    t, e
-                                );
-                            });
-                        }
-                    }
-                }
-            }
-            if !use_default {
-                return;
-            }
+        if target == "klog" {
+            self.command_writer.write(&mut now, record).unwrap_or_else(|e| {
+                eprintln!(
+                    "[flexi_logger] writing log line to command writer \
+                         failed with: \"{}\"",
+                    e
+                );
+            });
+            return;
         }
 
-        let effective_target = if special_target_is_used {
-            record.module_path().unwrap_or_default()
-        } else {
-            target
-        };
-        if !self.primary_enabled(record.level(), effective_target) {
+        if !self.primary_enabled(record.level(), target) {
             return;
         }
 
@@ -149,10 +115,8 @@ impl log::Log for FlexiLogger {
         self.primary_writer.flush().unwrap_or_else(|e| {
             eprintln!("[flexi_logger] flushing primary writer failed with {}", e);
         });
-        for writer in self.other_writers.values() {
-            writer.flush().unwrap_or_else(|e| {
-                eprintln!("[flexi_logger] flushing custom writer failed with {}", e);
-            });
-        }
+        self.command_writer.flush().unwrap_or_else(|e| {
+            eprintln!("[flexi_logger] flushing command writer failed with {}", e);
+        });
     }
 }

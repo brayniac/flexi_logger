@@ -4,7 +4,7 @@ use crate::formats::default_format;
 #[cfg(feature = "atty")]
 use crate::formats::AdaptiveFormat;
 use crate::primary_writer::PrimaryWriter;
-use crate::writers::{FileLogWriter, FileLogWriterBuilder, FlWriteMode, LogWriter};
+use crate::writers::{FileLogWriter, FileLogWriterBuilder, FlWriteMode, LogWriter, NoopWriter};
 use crate::{
     Cleanup, Criterion, FileSpec, FlexiLoggerError, FormatFunction, LogSpecification, LoggerHandle,
     Naming, DEFAULT_BUFFER_CAPACITY, DEFAULT_FLUSH_INTERVAL,
@@ -13,7 +13,7 @@ use crate::{
 use crate::{DEFAULT_MESSAGE_CAPA, DEFAULT_POOL_CAPA};
 #[cfg(feature = "specfile")]
 use notify::{watcher, DebouncedEvent, RecursiveMode, Watcher};
-use std::collections::HashMap;
+// use std::collections::HashMap;
 #[cfg(feature = "specfile_without_notification")]
 use std::io::Read;
 #[cfg(feature = "specfile_without_notification")]
@@ -63,7 +63,8 @@ pub struct Logger {
     o_palette: Option<String>,
     o_flush_wait: Option<std::time::Duration>,
     flwb: FileLogWriterBuilder,
-    other_writers: HashMap<String, Box<dyn LogWriter>>,
+    // other_writers: HashMap<String, Box<dyn LogWriter>>,
+    command_writer: Option<Box<dyn LogWriter>>,
     filter: Option<Box<dyn LogLineFilter + Send + Sync>>,
 }
 
@@ -154,7 +155,7 @@ impl Logger {
             o_palette: None,
             o_flush_wait: None,
             flwb: FileLogWriter::builder(FileSpec::default()),
-            other_writers: HashMap::<String, Box<dyn LogWriter>>::new(),
+            command_writer: None,
             filter: None,
         }
     }
@@ -469,19 +470,6 @@ impl Logger {
         self
     }
 
-    /// Registers a [`LogWriter`] implementation under the given target name.
-    ///
-    /// The target name must not start with an underscore.
-    /// See module [`writers`](crate::writers) for more details.
-    pub fn add_writer<S: Into<String>>(
-        mut self,
-        target_name: S,
-        writer: Box<dyn LogWriter>,
-    ) -> Self {
-        self.other_writers.insert(target_name.into(), writer);
-        self
-    }
-
     /// Sets the write mode for the logger.
     ///
     /// See [`WriteMode`] for more (important!) details.
@@ -496,6 +484,12 @@ impl Logger {
     #[must_use]
     pub fn use_windows_line_ending(mut self) -> Self {
         self.flwb = self.flwb.use_windows_line_ending();
+        self
+    }
+
+    #[must_use]
+    pub fn command_writer(mut self, writer: Box<dyn LogWriter>) -> Self {
+        self.command_writer = Some(writer);
         self
     }
 }
@@ -634,11 +628,11 @@ impl Logger {
             ),
         });
 
-        let a_other_writers = Arc::new(self.other_writers);
+        let a_command_writer = Arc::new(self.command_writer.unwrap_or_else(|| Box::new(NoopWriter { })));
 
         if let Some(wait_time) = self.o_flush_wait {
             let pw = Arc::clone(&a_primary_writer);
-            let ows = Arc::clone(&a_other_writers);
+            let cw = Arc::clone(&a_command_writer);
             std::thread::Builder::new()
                 .name("flexi_logger-flusher".to_string())
                 .stack_size(128)
@@ -647,9 +641,7 @@ impl Logger {
                     loop {
                         receiver.recv_timeout(wait_time).ok();
                         pw.flush().ok();
-                        for w in ows.values() {
-                            w.flush().ok();
-                        }
+                        cw.flush().ok();
                     }
                 })?;
         }
@@ -660,11 +652,11 @@ impl Logger {
         let flexi_logger = FlexiLogger::new(
             Arc::clone(&a_l_spec),
             Arc::clone(&a_primary_writer),
-            Arc::clone(&a_other_writers),
+            Arc::clone(&a_command_writer),
             self.filter,
         );
 
-        let handle = LoggerHandle::new(a_l_spec, a_primary_writer, a_other_writers);
+        let handle = LoggerHandle::new(a_l_spec, a_primary_writer, a_command_writer);
         handle.reconfigure(max_level);
         Ok((Box::new(flexi_logger), handle))
     }

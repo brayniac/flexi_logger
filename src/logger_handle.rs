@@ -1,7 +1,7 @@
 use crate::primary_writer::PrimaryWriter;
 use crate::writers::{FileLogWriterBuilder, LogWriter};
 use crate::{FlexiLoggerError, LogSpecification};
-use std::collections::HashMap;
+// use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 /// Shuts down the logger when dropped, and allows reconfiguring the logger programmatically.
@@ -84,20 +84,20 @@ pub struct LoggerHandle {
     spec: Arc<RwLock<LogSpecification>>,
     spec_stack: Vec<LogSpecification>,
     primary_writer: Arc<PrimaryWriter>,
-    other_writers: Arc<HashMap<String, Box<dyn LogWriter>>>,
+    command_writer: Arc<Box<dyn LogWriter>>,
 }
 
 impl LoggerHandle {
     pub(crate) fn new(
         spec: Arc<RwLock<LogSpecification>>,
         primary_writer: Arc<PrimaryWriter>,
-        other_writers: Arc<HashMap<String, Box<dyn LogWriter>>>,
+        command_writer: Arc<Box<dyn LogWriter>>,
     ) -> Self {
         Self {
             spec,
             spec_stack: Vec::default(),
             primary_writer,
-            other_writers,
+            command_writer,
         }
     }
 
@@ -107,10 +107,7 @@ impl LoggerHandle {
     }
 
     //
-    pub(crate) fn reconfigure(&self, mut max_level: log::LevelFilter) {
-        for w in self.other_writers.as_ref().values() {
-            max_level = std::cmp::max(max_level, w.max_log_level());
-        }
+    pub(crate) fn reconfigure(&self, max_level: log::LevelFilter) {
         log::set_max_level(max_level);
     }
 
@@ -170,9 +167,7 @@ impl LoggerHandle {
     /// Flush all writers.
     pub fn flush(&self) {
         self.primary_writer.flush().ok();
-        for writer in self.other_writers.values() {
-            writer.flush().ok();
-        }
+        self.command_writer.flush().ok();
     }
 
     /// Replaces parts of the configuration of the file log writer.
@@ -214,9 +209,7 @@ impl LoggerHandle {
     /// See also [`writers::LogWriter::shutdown`](crate::writers::LogWriter::shutdown).
     pub fn shutdown(&self) {
         self.primary_writer.shutdown();
-        for writer in self.other_writers.values() {
-            writer.shutdown();
-        }
+        self.command_writer.shutdown();
     }
 
     // Allows checking the logs written so far to the writer
@@ -229,8 +222,6 @@ impl LoggerHandle {
 impl Drop for LoggerHandle {
     fn drop(&mut self) {
         self.primary_writer.shutdown();
-        for writer in self.other_writers.values() {
-            writer.shutdown();
-        }
+        self.command_writer.shutdown();
     }
 }

@@ -98,6 +98,7 @@
 
 mod file_log_writer;
 mod log_writer;
+mod noop_writer;
 
 #[cfg(feature = "syslog_writer")]
 mod syslog_writer;
@@ -109,3 +110,4 @@ pub use self::syslog_writer::{
 
 pub use self::file_log_writer::{FileLogWriter, FileLogWriterBuilder, FlWriteMode};
 pub use self::log_writer::LogWriter;
+pub use self::noop_writer::NoopWriter;
